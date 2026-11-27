@@ -15,6 +15,8 @@
   
   <!-- html5-qrcode Library -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <!-- Supply a Data Matrix decoder on mobile browsers without BarcodeDetector. -->
+  <script defer src="https://cdn.jsdelivr.net/npm/barcode-detector@3.2.5/dist/iife/polyfill.min.js"></script>
   
   <!-- SheetJS (xlsx) Library -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
@@ -48,9 +50,9 @@
     }
 
     #reader video {
-      object-fit: cover !important;
+      display: block;
       width: 100% !important;
-      height: 100% !important;
+      height: auto !important;
       border-radius: 1rem;
     }
 
@@ -155,8 +157,8 @@
     <!-- 2. منطقة الكاميرا والتحكم المباشر -->
     <section class="bg-white rounded-2xl p-2.5 shadow-sm border border-slate-200 relative">
       <!-- حاوية الكاميرا -->
-      <div id="cameraContainer" class="relative w-full h-56 sm:h-64 bg-slate-900 rounded-xl overflow-hidden flex items-center justify-center">
-        <div id="reader" class="w-full h-full"></div>
+      <div id="cameraContainer" class="relative w-full min-h-56 sm:min-h-64 bg-slate-900 rounded-xl overflow-hidden flex items-center justify-center">
+        <div id="reader" class="w-full"></div>
         
         <!-- خط الليزر الوهمي أثناء التشغيل -->
         <div id="laserOverlay" class="laser-line hidden"></div>
@@ -179,8 +181,8 @@
           <p class="text-xs text-slate-400 mt-2">يدعم باركود المنتجات (1D) وملصقات ESL (QR / DataMatrix)</p>
         </div>
 
-        <!-- تنبيه فترة التهدئة القصيرة لمنع التكرار -->
-        <div id="cooldownBadge" class="hidden absolute bottom-2.5 left-1/2 -translate-x-1/2 bg-emerald-600/95 text-white text-xs font-bold px-3 py-1 rounded-full shadow-md z-30 whitespace-nowrap">
+        <!-- توجيه المستخدم إلى الخطوة التالية -->
+        <div id="productHint" class="hidden absolute bottom-2.5 left-1/2 -translate-x-1/2 bg-emerald-600/95 text-white text-xs font-bold px-3 py-1 rounded-full shadow-md z-30 whitespace-nowrap">
           تم التقاط ESL! وجّه الكاميرا للمنتج...
         </div>
       </div>
@@ -337,16 +339,15 @@
     let scanStep = 'ESL';
     let stagedEslCode = '';
     
-    // متغيرات منع التكرار السريع (Cooldown)
-    let isCooldown = false;
-    let lastScannedCode = '';
-    let lastScanTimestamp = 0;
+    // يُقبل الرمز التالي فوراً، ويُتجاهل تكرار آخر رمز مقبول داخل الإطار.
+    let lastAcceptedCode = '';
 
     // متغيرات الكاميرا والصوت
     let html5QrCode = null;
     let isScanning = false;
     let camerasList = [];
-    let currentCameraIndex = 0;
+    let selectedCameraId = '';
+    let cameraBusy = false;
     let isTorchOn = false;
     let isSoundEnabled = true;
     let audioCtx = null;
@@ -443,6 +444,7 @@
     // 3. إدارة الكاميرا والمسح المستمر (html5-qrcode)
     // ==========================================
     async function startScanner() {
+      if (cameraBusy || isScanning) return;
       initAudio(); // تفعيل سياق الصوت بلمسة المستخدم
       const errorBox = document.getElementById('cameraErrorBox');
       const errorText = document.getElementById('cameraErrorText');
@@ -456,6 +458,8 @@
         return;
       }
 
+      cameraBusy = true;
+      document.getElementById('startScanBtn').disabled = true;
       try {
         if (!html5QrCode) {
           // تهيئة المكتبة لدعم كافة أنواع الباركود (1D للمنتجات و 2D لـ ESL)
@@ -476,47 +480,33 @@
           });
         }
 
-        // جلب قائمة الكاميرات لاختيار الخلفية تلقائياً
-        if (camerasList.length === 0) {
-          camerasList = await Html5Qrcode.getCameras();
-          if (camerasList && camerasList.length > 0) {
-            // البحث عن الكاميرا الخلفية
-            const backCamIndex = camerasList.findIndex(c =>
-              c.label.toLowerCase().includes('back') ||
-              c.label.toLowerCase().includes('rear') ||
-              c.label.toLowerCase().includes('environment') ||
-              c.label.includes('خلفية')
-            );
-            currentCameraIndex = backCamIndex !== -1 ? backCamIndex : camerasList.length - 1;
-          }
-        }
-
-        const config = {
-          fps: 20, // معدل إطارات مرتفع لالتقاط سريع جداً
-          qrbox: function(viewfinderWidth, viewfinderHeight) {
-            // مربع مسح عريض يناسب باركود المنتجات الطويل و QR معاً
-            const width = Math.min(viewfinderWidth * 0.85, 340);
-            const height = Math.min(viewfinderHeight * 0.65, 190);
-            return { width: Math.floor(width), height: Math.floor(height) };
-          },
-          aspectRatio: 1.5
+        // يُختار المنظار الخلفي افتراضياً، ويُستخدم الجهاز المحدد عند تبديل الكاميرا.
+        const videoConstraints = {
+          ...(selectedCameraId ? { deviceId: { exact: selectedCameraId } } : { facingMode: { ideal: 'environment' } }),
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          advanced: [{ focusMode: 'continuous' }]
         };
-
-        const cameraConstraint = camerasList.length > 0
-          ? { deviceId: { exact: camerasList[currentCameraIndex].id } }
-          : { facingMode: "environment" };
-
+        // من دون qrbox تفحص المكتبة كامل إطار المعاينة.
         await html5QrCode.start(
-          cameraConstraint,
-          config,
+          selectedCameraId || { facingMode: 'environment' },
+          { fps: 12, videoConstraints },
           onScanSuccess,
-          () => {} // تجاهل أخطاء الإطارات الفارغة لزيادة السرعة
+          () => {}
         );
 
         isScanning = true;
         document.getElementById('cameraPlaceholder').classList.add('hidden');
         document.getElementById('laserOverlay').classList.remove('hidden');
         document.getElementById('stopScanBtn').disabled = false;
+        // بعد منح الإذن تتاح هوية العدسة الفعلية، من دون فتح بث ثانٍ.
+        try {
+          selectedCameraId = html5QrCode.getRunningTrackSettings().deviceId || '';
+          camerasList = (await navigator.mediaDevices.enumerateDevices())
+            .filter(device => device.kind === 'videoinput' && device.deviceId);
+        } catch (err) {
+          camerasList = [];
+        }
         document.getElementById('switchCamBtn').disabled = camerasList.length <= 1;
         
         // التحقق من دعم الفلاش (Torch)
@@ -532,19 +522,26 @@
         }
         errorText.textContent = msg;
         errorBox.classList.remove('hidden');
+        selectedCameraId = '';
+      } finally {
+        cameraBusy = false;
+        document.getElementById('startScanBtn').disabled = false;
       }
     }
 
     async function stopScanner() {
-      if (html5QrCode && isScanning) {
-        try {
-          if (isTorchOn) {
-            await toggleTorch(false);
-          }
-          await html5QrCode.stop();
-        } catch (e) {
-          console.warn('خطأ أثناء إيقاف الكاميرا:', e);
+      if (cameraBusy || !isScanning) return;
+      cameraBusy = true;
+      try {
+        if (isTorchOn) {
+          await toggleTorch(false);
         }
+        await html5QrCode.stop();
+      } catch (e) {
+        console.warn('خطأ أثناء إيقاف الكاميرا:', e);
+        return;
+      } finally {
+        cameraBusy = false;
       }
       isScanning = false;
       document.getElementById('cameraPlaceholder').classList.remove('hidden');
@@ -555,11 +552,14 @@
     }
 
     async function switchCamera() {
-      if (camerasList.length <= 1) return;
-      currentCameraIndex = (currentCameraIndex + 1) % camerasList.length;
+      if (cameraBusy || !isScanning || camerasList.length <= 1) return;
+      const activeIndex = camerasList.findIndex(device => device.deviceId === selectedCameraId);
+      const nextCamera = camerasList[(activeIndex + 1) % camerasList.length];
       await stopScanner();
+      if (isScanning) return;
+      selectedCameraId = nextCamera.deviceId;
       await startScanner();
-      showToast('تم تبديل الكاميرا');
+      if (isScanning) showToast('تم تبديل الكاميرا');
     }
 
     function checkTorchSupport() {
@@ -605,16 +605,8 @@
     // ==========================================
     function onScanSuccess(decodedText) {
       const cleanCode = decodedText.trim();
-      if (!cleanCode) return;
-
-      const now = Date.now();
-
-      // منع القراءة المكررة لنفس الكود خلال فترة التهدئة (850ms)
-      if (isCooldown) return;
-      if (cleanCode === lastScannedCode && (now - lastScanTimestamp) < 1200) return;
-
-      lastScannedCode = cleanCode;
-      lastScanTimestamp = now;
+      if (!cleanCode || cleanCode === lastAcceptedCode || cleanCode === stagedEslCode) return;
+      lastAcceptedCode = cleanCode;
 
       // تأثير بصري سريع على إطار الكاميرا
       triggerCameraFlash();
@@ -628,26 +620,7 @@
         if (navigator.vibrate) navigator.vibrate(100);
 
         updateStepUI();
-
-        // تفعيل فترة تهدئة 850ms حتى لا يُقرأ نفس باركود ESL كمنتج بالخطأ
-        isCooldown = true;
-        const cooldownBadge = document.getElementById('cooldownBadge');
-        cooldownBadge.classList.remove('hidden');
-
-        setTimeout(() => {
-          isCooldown = false;
-          cooldownBadge.classList.add('hidden');
-        }, 850);
-
       } else if (scanStep === 'PRODUCT') {
-        // منع التقاط نفس كود ESL كمنتج عن طريق الخطأ
-        if (cleanCode === stagedEslCode) {
-          showToast('هذا هو نفس باركود ESL! صوّر باركود المنتج');
-          isCooldown = true;
-          setTimeout(() => { isCooldown = false; }, 700);
-          return;
-        }
-
         // --- الخطوة 2: التقاط باركود المنتج وإضافته للجدول ---
         playBeep('product');
         if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
@@ -658,12 +631,6 @@
         stagedEslCode = '';
         scanStep = 'ESL';
         updateStepUI();
-
-        // فترة تهدئة قصيرة (750ms) قبل بدء الصف الجديد
-        isCooldown = true;
-        setTimeout(() => {
-          isCooldown = false;
-        }, 750);
       }
     }
 
@@ -677,8 +644,7 @@
     function resetToStep1() {
       stagedEslCode = '';
       scanStep = 'ESL';
-      isCooldown = false;
-      document.getElementById('cooldownBadge').classList.add('hidden');
+      lastAcceptedCode = '';
       updateStepUI();
       showToast('تم إلغاء ESL، جاهز لمسح ESL جديد');
     }
@@ -692,6 +658,7 @@
       const stagingCard = document.getElementById('stagingEslCard');
       const stagedVal = document.getElementById('stagedEslValue');
 
+      document.getElementById('productHint').classList.toggle('hidden', scanStep !== 'PRODUCT');
       if (scanStep === 'ESL') {
         banner.className = 'rounded-2xl p-3.5 sm:p-4 text-white shadow-lg transition-all duration-300 bg-gradient-to-l from-indigo-600 to-blue-600 border-2 border-indigo-400/50';
         circle.textContent = '1';
