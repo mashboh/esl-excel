@@ -15,8 +15,8 @@
   
   <!-- html5-qrcode Library -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-  <!-- Supply a Data Matrix decoder on mobile browsers without BarcodeDetector. -->
-  <script defer src="https://cdn.jsdelivr.net/npm/barcode-detector@3.2.5/dist/iife/polyfill.min.js"
+  <!-- Independent software decoder for high-resolution camera frames. -->
+  <script defer src="https://cdn.jsdelivr.net/npm/barcode-detector@3.2.5/dist/iife/ponyfill.min.js"
           onload="window.eslDetectorScript='جاهز'" onerror="window.eslDetectorScript='فشل التحميل'"></script>
   
   <!-- SheetJS (xlsx) Library -->
@@ -379,7 +379,9 @@
     let isSoundEnabled = true;
     let audioCtx = null;
 
-    const diagnosticVersion = 'mobile-2';
+    const scanFormats = ['qr_code', 'data_matrix', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf'];
+    let scanRevision = 0;
+    const diagnosticVersion = 'mobile-3';
     let diagnosis;
     let diagnosticTimer;
 
@@ -387,7 +389,8 @@
       return {
         state: 'idle', started: performance.now(), lastVideoTime: -1, lastVideoChange: 0,
         lastAttempt: 0, lastGood: 0, misses: 0, accepted: 0, repeats: 0, decoderErrors: 0,
-        lastError: '', cause: '', video: '—', scanArea: '—', track: '—', events: []
+        lastError: '', cause: '', video: '—', scanArea: '—', track: '—', events: [],
+        detailArea: '—', detailAttempts: 0, detailHits: 0, detailError: '', lastErrorTime: 0
       };
     }
 
@@ -420,6 +423,7 @@
       else if (/checksum|format(exception|error)/i.test(text)) issue = 'عثر القارئ على نمط لكن تعذّر التحقق منه';
       else issue = 'خطأ في محاولة فك الرمز (' + (text.match(/TypeError|RangeError|InvalidStateError|NotSupportedError|SecurityError/i)?.[0] || 'غير مصنّف') + ')';
       diagnosis.decoderErrors++;
+      diagnosis.lastErrorTime = performance.now();
       if (issue !== diagnosis.lastError) diagnosticEvent(issue);
       diagnosis.lastError = issue;
     }
@@ -449,7 +453,8 @@
       if (now - diagnosis.started > 3500 && (!diagnosis.lastVideoChange || now - diagnosis.lastVideoChange > 3500)) return 'الكاميرا مفتوحة لكن صورة الفيديو لا تتقدم.';
       if (!diagnosis.lastAttempt || now - diagnosis.lastAttempt > 3500) return 'بانتظار نتيجة من القارئ. راقب عدّاد المحاولات.';
       if (diagnosis.lastGood && now - diagnosis.lastGood < 1800) return 'القارئ يتعرّف على رمز. الخطوة الحالية: ' + (scanStep === 'ESL' ? 'ملصق ESL' : 'باركود المنتج');
-      if (diagnosis.lastError && !diagnosis.misses && !diagnosis.accepted) return diagnosis.lastError;
+      if (diagnosis.detailError) return 'تعذّر تشغيل القارئ عالي الدقة. قارئ ZXing الأساسي مستمر.';
+      if (diagnosis.lastError && now - diagnosis.lastErrorTime < 2000) return diagnosis.lastError;
       return 'الفيديو يعمل والقارئ يحاول. لم يتعرّف على رمز في المحاولات الأخيرة.';
     }
 
@@ -460,7 +465,8 @@
         'تشخيص ماسح ESL · ' + diagnosticVersion,
         diagnosisSummary(),
         'المتصفح: ' + (browser?.join(' / ') || 'غير معروف'),
-        'المكتبة الأساسية: ' + (typeof Html5Qrcode === 'function' ? 'جاهزة' : 'غير متاحة') + ' | المكوّن الإضافي: ' + (window.eslDetectorScript || 'بانتظار التحميل') + ' | BarcodeDetector: ' + (typeof BarcodeDetector === 'function' ? 'متاح' : 'غير متاح'),
+        'ZXing JS: ' + (typeof Html5Qrcode === 'function' ? 'جاهز' : 'غير متاح') + ' | ZXing WASM: ' + (diagnosis.detailError || window.eslDetectorScript || 'بانتظار التحميل'),
+        'القراءة عالية الدقة: ' + diagnosis.detailArea + ' | محاولات: ' + diagnosis.detailAttempts + ' | اكتشافات: ' + diagnosis.detailHits,
         'الفيديو: ' + diagnosis.video + ' | منطقة القراءة: ' + diagnosis.scanArea + ' | إطار العرض: ' + box.clientWidth + '×' + box.clientHeight,
         'مسار الكاميرا: ' + diagnosis.track,
         'محاولات بلا رمز: ' + diagnosis.misses + ' | قراءات مقبولة: ' + diagnosis.accepted + ' | تكرار مُتجاهَل: ' + diagnosis.repeats + ' | أخطاء القارئ: ' + diagnosis.decoderErrors,
@@ -600,6 +606,56 @@
     // ==========================================
     // 3. إدارة الكاميرا والمسح المستمر (html5-qrcode)
     // ==========================================
+    // Retry undecoded frames using original video pixels, independently of the browser detector.
+    function createDetailScan(session) {
+      const surface = document.createElement('canvas');
+      const ctx = surface.getContext('2d', { willReadFrequently: true });
+      let detector, pending = false, nextAttempt = 0;
+      return async function tryDetailScan() {
+        if (!isScanning || cameraBusy || document.hidden || pending || session !== diagnosis ||
+            session.detailError || performance.now() < nextAttempt) return;
+        const video = document.querySelector('#reader video');
+        if (!video || video.readyState < 2 || !video.videoWidth || !video.clientWidth || !video.clientHeight) return;
+        const Detector = window.BarcodeDetectionAPI?.BarcodeDetector;
+        if (!Detector) {
+          if (window.eslDetectorScript === 'فشل التحميل') session.detailError = 'فشل تحميل مكتبة ZXing WASM';
+          return;
+        }
+        const revision = scanRevision;
+        pending = true;
+        nextAttempt = performance.now() + 200;
+        try {
+          if (!detector) detector = new Detector({ formats: scanFormats });
+          const box = document.getElementById('cameraContainer');
+          const w = Math.round(video.videoWidth * Math.min(1, box.clientWidth / video.clientWidth));
+          const h = Math.round(video.videoHeight * Math.min(1, box.clientHeight / video.clientHeight));
+          if (!w || !h) return;
+          const scale = Math.min(1, 1024 / Math.max(w, h));
+          const width = Math.max(1, Math.round(w * scale)), height = Math.max(1, Math.round(h * scale));
+          if (surface.width !== width) surface.width = width;
+          if (surface.height !== height) surface.height = height;
+          ctx.drawImage(video, (video.videoWidth - w) / 2, (video.videoHeight - h) / 2, w, h, 0, 0, width, height);
+          session.detailArea = width + '×' + height;
+          session.detailAttempts++;
+          const codes = await detector.detect(ctx.getImageData(0, 0, width, height));
+          if (!codes.length || !isScanning || cameraBusy || document.hidden || session !== diagnosis || revision !== scanRevision) return;
+          const area = code => code.boundingBox.width * code.boundingBox.height;
+          const best = codes.reduce((a, b) => area(a) >= area(b) ? a : b);
+          session.detailHits++;
+          onScanSuccess(best.rawValue, best.format.toUpperCase(), 'ZXing WASM');
+        } catch (err) {
+          if (session !== diagnosis || !isScanning || cameraBusy) return;
+          session.detailError = 'خطأ ZXing WASM (' + (err?.name || 'Error') + ')';
+          session.decoderErrors++;
+          session.lastError = session.detailError;
+          session.lastErrorTime = performance.now();
+          diagnosticEvent(session.detailError);
+        } finally {
+          pending = false;
+        }
+      };
+    }
+
     async function startScanner() {
       if (cameraBusy || isScanning) return;
       clearInterval(diagnosticTimer);
@@ -630,19 +686,9 @@
       try {
         if (!html5QrCode) {
           // تهيئة المكتبة لدعم كافة أنواع الباركود (1D للمنتجات و 2D لـ ESL)
-          const formatsToSupport = [
-            Html5QrcodeSupportedFormats.QR_CODE,
-            Html5QrcodeSupportedFormats.DATA_MATRIX,
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8,
-            Html5QrcodeSupportedFormats.UPC_A,
-            Html5QrcodeSupportedFormats.UPC_E,
-            Html5QrcodeSupportedFormats.CODE_128,
-            Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.ITF
-          ];
           html5QrCode = new Html5Qrcode("reader", {
-            formatsToSupport: formatsToSupport,
+            formatsToSupport: scanFormats.map(format => Html5QrcodeSupportedFormats[format.toUpperCase()]),
+            useBarCodeDetectorIfSupported: false,
             verbose: false
           });
         }
@@ -656,14 +702,18 @@
         };
         // طابق مساحة الفحص مع الجزء المرئي من الفيديو من دون تشويه نسب الصورة.
         const cameraBox = document.getElementById('cameraContainer');
+        const tryDetailScan = createDetailScan(diagnosis);
         await html5QrCode.start(
           selectedCameraId || { facingMode: 'environment' },
           { fps: 12, videoConstraints, qrbox: (width, height) => ({
             width: Math.min(width, cameraBox.clientWidth),
             height: Math.min(height, cameraBox.clientHeight)
           }) },
-          onScanSuccess,
-          noteScanMiss
+          (text, result) => onScanSuccess(text, result?.result?.format?.formatName, 'ZXing JS'),
+          message => {
+            noteScanMiss(message);
+            tryDetailScan();
+          }
         );
 
         isScanning = true;
@@ -781,16 +831,14 @@
     // ==========================================
     // 4. آلة الحالات السريعة (Step 1 ESL -> Step 2 Product)
     // ==========================================
-    function onScanSuccess(decodedText, decodedResult) {
+    function onScanSuccess(decodedText, format = 'غير معروف', decoder = 'غير معروف') {
       const cleanCode = decodedText.trim();
       diagnosis.lastAttempt = performance.now();
       if (!cleanCode) { diagnosis.misses++; return; }
       diagnosis.lastGood = diagnosis.lastAttempt;
       if (cleanCode === lastAcceptedCode || cleanCode === stagedEslCode) { diagnosis.repeats++; return; }
       diagnosis.accepted++;
-      const result = decodedResult?.result;
-      const format = result?.format?.formatName || 'غير معروف';
-      const decoder = result?.debugData?.decoderName || 'غير معروف';
+      scanRevision++;
       diagnosticEvent('التقط ' + (scanStep === 'ESL' ? 'ملصق ESL' : 'باركود المنتج') + ' · ' + format + ' / ' + decoder);
       lastAcceptedCode = cleanCode;
 
@@ -828,6 +876,7 @@
     }
 
     function resetToStep1() {
+      scanRevision++;
       stagedEslCode = '';
       scanStep = 'ESL';
       lastAcceptedCode = '';
