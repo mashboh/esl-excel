@@ -16,7 +16,8 @@
   <!-- html5-qrcode Library -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <!-- Supply a Data Matrix decoder on mobile browsers without BarcodeDetector. -->
-  <script defer src="https://cdn.jsdelivr.net/npm/barcode-detector@3.2.5/dist/iife/polyfill.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/barcode-detector@3.2.5/dist/iife/polyfill.min.js"
+          onload="window.eslDetectorScript='جاهز'" onerror="window.eslDetectorScript='فشل التحميل'"></script>
   
   <!-- SheetJS (xlsx) Library -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
@@ -41,7 +42,19 @@
     }
 
     /* تخصيص حاوية الكاميرا لتناسب شاشة الجوال بسلاسة */
+    #cameraContainer {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      height: 14rem;
+    }
+    @media (min-width: 640px) {
+      #cameraContainer { height: 16rem; }
+    }
     #reader {
+      flex: none;
       width: 100% !important;
       border: none !important;
       border-radius: 1rem;
@@ -157,7 +170,7 @@
     <!-- 2. منطقة الكاميرا والتحكم المباشر -->
     <section class="bg-white rounded-2xl p-2.5 shadow-sm border border-slate-200 relative">
       <!-- حاوية الكاميرا -->
-      <div id="cameraContainer" class="relative w-full min-h-56 sm:min-h-64 bg-slate-900 rounded-xl overflow-hidden flex items-center justify-center">
+      <div id="cameraContainer" class="w-full bg-slate-900 rounded-xl">
         <div id="reader" class="w-full"></div>
         
         <!-- خط الليزر الوهمي أثناء التشغيل -->
@@ -224,6 +237,20 @@
           <span>إدخال يدوي</span>
         </button>
       </div>
+
+      <details id="scanDiagnostics" class="mt-3 rounded-xl border border-slate-200 bg-slate-50 text-sm">
+        <summary class="cursor-pointer px-3 py-2 font-bold text-slate-700">تشخيص المسح</summary>
+        <div class="px-3 pb-3">
+          <p id="scanDiagnosis" class="font-semibold text-slate-800"></p>
+          <pre id="scanReport" class="my-2 max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs leading-5" style="unicode-bidi: plaintext"></pre>
+          <button type="button" onclick="copyScanReport()" class="rounded-lg bg-slate-800 px-3 py-2 font-bold text-white">نسخ تقرير التشخيص</button>
+          <a href="https://github.com/mashboh/esl-excel/issues/new" id="githubScanReport" target="_blank" rel="noopener noreferrer"
+             class="inline-block rounded-lg border border-slate-300 px-3 py-2 font-bold">حفظ التقرير في GitHub</a>
+          <p class="mt-2 text-xs text-slate-600">يفتح نموذج بلاغ عام. اضغط Create في GitHub لحفظ التقرير.</p>
+          <textarea id="manualReportCopy" hidden readonly aria-label="تقرير التشخيص للنسخ اليدوي" class="mt-2 w-full text-xs" rows="5"></textarea>
+          <span id="scanCopyStatus" role="status" class="text-xs"></span>
+        </div>
+      </details>
 
       <!-- لوحة الإدخال اليدوي البديلة (في حال تلف الباركود) -->
       <div id="manualInputPanel" class="hidden mt-3 pt-3 border-t border-slate-200">
@@ -352,6 +379,136 @@
     let isSoundEnabled = true;
     let audioCtx = null;
 
+    const diagnosticVersion = 'mobile-2';
+    let diagnosis;
+    let diagnosticTimer;
+
+    function newDiagnosis() {
+      return {
+        state: 'idle', started: performance.now(), lastVideoTime: -1, lastVideoChange: 0,
+        lastAttempt: 0, lastGood: 0, misses: 0, accepted: 0, repeats: 0, decoderErrors: 0,
+        lastError: '', cause: '', video: '—', scanArea: '—', track: '—', events: []
+      };
+    }
+
+    function diagnosticEvent(message) {
+      const seconds = Math.floor((performance.now() - diagnosis.started) / 1000);
+      diagnosis.events.push('+' + seconds + 's  ' + message);
+      if (diagnosis.events.length > 20) diagnosis.events.shift();
+    }
+
+    // لا يتضمن التقرير نص الخطأ الخام، فقد تضع بعض المكتبات محتوى الرمز فيه.
+    function cameraFailure(error) {
+      const text = String(error?.name || '') + ' ' + String(error);
+      if (/NotAllowedError|PermissionDenied|permission denied|user denied/i.test(text)) return 'رفض إذن الكاميرا (NotAllowedError)';
+      if (/NotFoundError|DevicesNotFound/i.test(text)) return 'لم يعثر المتصفح على كاميرا (NotFoundError)';
+      if (/NotReadableError|TrackStartError|could not start video/i.test(text)) return 'الكاميرا مشغولة أو تعذّر تشغيلها (NotReadableError)';
+      if (/Overconstrained|ConstraintNotSatisfied/i.test(text)) return 'الكاميرا لا تقبل إعدادات الفيديو المطلوبة (OverconstrainedError)';
+      if (/SecurityError|secure context/i.test(text)) return 'المتصفح يمنع الوصول إلى الكاميرا في هذه الصفحة';
+      if (/AbortError/i.test(text)) return 'المتصفح ألغى تشغيل الكاميرا (AbortError)';
+      if (typeof Html5Qrcode !== 'function') return 'تعذّر تحميل مكتبة المسح html5-qrcode';
+      if (!navigator.mediaDevices?.getUserMedia) return 'واجهة الكاميرا غير متاحة في هذا المتصفح';
+      return 'تعذّر تشغيل الماسح لسبب لم يحدده المتصفح';
+    }
+
+    function noteScanMiss(message) {
+      diagnosis.lastAttempt = performance.now();
+      const text = String(message);
+      let issue = '';
+      if (/wasm|WebAssembly|failed to fetch|networkerror|load failed/i.test(text)) issue = 'تعذّر تحميل مكوّن فك الرموز أو تشغيله';
+      else if (/no barcode|notfound|no multi.?format|no code|no qr/i.test(text)) { diagnosis.misses++; return; }
+      else if (/checksum|format(exception|error)/i.test(text)) issue = 'عثر القارئ على نمط لكن تعذّر التحقق منه';
+      else issue = 'خطأ في محاولة فك الرمز (' + (text.match(/TypeError|RangeError|InvalidStateError|NotSupportedError|SecurityError/i)?.[0] || 'غير مصنّف') + ')';
+      diagnosis.decoderErrors++;
+      if (issue !== diagnosis.lastError) diagnosticEvent(issue);
+      diagnosis.lastError = issue;
+    }
+
+    function sampleVideo() {
+      const video = document.querySelector('#reader video');
+      if (!video) return;
+      if (video.currentTime !== diagnosis.lastVideoTime && video.readyState >= 2 && !video.paused) {
+        diagnosis.lastVideoTime = video.currentTime;
+        diagnosis.lastVideoChange = performance.now();
+      }
+      const track = video.srcObject?.getVideoTracks?.()[0];
+      const settings = track?.getSettings?.() || {};
+      diagnosis.video = video.videoWidth + '×' + video.videoHeight;
+      diagnosis.track = [track?.readyState, track?.muted ? 'muted' : '', settings.facingMode, settings.focusMode].filter(Boolean).join(' / ') || '—';
+      const canvas = document.querySelector('#reader canvas');
+      if (canvas) diagnosis.scanArea = canvas.width + '×' + canvas.height;
+    }
+
+    function diagnosisSummary() {
+      const now = performance.now();
+      if (diagnosis.state === 'idle') return 'اضغط «بدء المسح» لتسجيل محاولة.';
+      if (diagnosis.state === 'failed') return diagnosis.cause;
+      if (diagnosis.state === 'stopped') return 'الكاميرا متوقفة. التقرير يعرض آخر محاولة.';
+      if (diagnosis.state === 'starting') return 'بانتظار فتح الكاميرا أو موافقة المتصفح.';
+      if (document.hidden) return 'صفحة الماسح في الخلفية.';
+      if (now - diagnosis.started > 3500 && (!diagnosis.lastVideoChange || now - diagnosis.lastVideoChange > 3500)) return 'الكاميرا مفتوحة لكن صورة الفيديو لا تتقدم.';
+      if (!diagnosis.lastAttempt || now - diagnosis.lastAttempt > 3500) return 'بانتظار نتيجة من القارئ. راقب عدّاد المحاولات.';
+      if (diagnosis.lastGood && now - diagnosis.lastGood < 1800) return 'القارئ يتعرّف على رمز. الخطوة الحالية: ' + (scanStep === 'ESL' ? 'ملصق ESL' : 'باركود المنتج');
+      if (diagnosis.lastError && !diagnosis.misses && !diagnosis.accepted) return diagnosis.lastError;
+      return 'الفيديو يعمل والقارئ يحاول. لم يتعرّف على رمز في المحاولات الأخيرة.';
+    }
+
+    function scanReportText(events = diagnosis.events) {
+      const box = document.getElementById('cameraContainer');
+      const browser = navigator.userAgent.match(/(?:EdgA?|CriOS|Chrome|FxiOS|Firefox|Version)\/[\d.]+/g);
+      return [
+        'تشخيص ماسح ESL · ' + diagnosticVersion,
+        diagnosisSummary(),
+        'المتصفح: ' + (browser?.join(' / ') || 'غير معروف'),
+        'المكتبة الأساسية: ' + (typeof Html5Qrcode === 'function' ? 'جاهزة' : 'غير متاحة') + ' | المكوّن الإضافي: ' + (window.eslDetectorScript || 'بانتظار التحميل') + ' | BarcodeDetector: ' + (typeof BarcodeDetector === 'function' ? 'متاح' : 'غير متاح'),
+        'الفيديو: ' + diagnosis.video + ' | منطقة القراءة: ' + diagnosis.scanArea + ' | إطار العرض: ' + box.clientWidth + '×' + box.clientHeight,
+        'مسار الكاميرا: ' + diagnosis.track,
+        'محاولات بلا رمز: ' + diagnosis.misses + ' | قراءات مقبولة: ' + diagnosis.accepted + ' | تكرار مُتجاهَل: ' + diagnosis.repeats + ' | أخطاء القارئ: ' + diagnosis.decoderErrors,
+        'آخر خطأ للقارئ: ' + (diagnosis.lastError || '—'),
+        ...events
+      ].join('\n');
+    }
+
+    function refreshDiagnostics() {
+      sampleVideo();
+      if (!document.getElementById('scanDiagnostics').open) return;
+      document.getElementById('scanDiagnosis').textContent = diagnosisSummary();
+      document.getElementById('scanReport').textContent = scanReportText();
+    }
+
+    async function copyScanReport() {
+      refreshDiagnostics();
+      const report = scanReportText();
+      const status = document.getElementById('scanCopyStatus');
+      const field = document.getElementById('manualReportCopy');
+      try {
+        await navigator.clipboard.writeText(report);
+        field.hidden = true;
+        status.textContent = 'تم نسخ التقرير';
+      } catch {
+        field.value = report;
+        field.hidden = false;
+        field.focus();
+        field.select();
+        status.textContent = 'حدّد التقرير ثم اختر نسخ';
+      }
+    }
+
+    diagnosis = newDiagnosis();
+    document.getElementById('scanDiagnostics').addEventListener('toggle', refreshDiagnostics);
+    document.getElementById('githubScanReport').addEventListener('click', event => {
+      refreshDiagnostics();
+      const url = new URL('https://github.com/mashboh/esl-excel/issues/new');
+      url.searchParams.set('title', '[ESL] تقرير تشخيص المسح');
+      const events = diagnosis.events.slice();
+      url.searchParams.set('body', scanReportText(events));
+      while (url.href.length > 7000 && events.length) {
+        events.shift();
+        url.searchParams.set('body', scanReportText(events));
+      }
+      event.currentTarget.href = url.href;
+    });
+
     // تحميل البيانات المحفوظة عند بدء الصفحة
     window.addEventListener('DOMContentLoaded', () => {
       loadFromStorage();
@@ -445,7 +602,12 @@
     // ==========================================
     async function startScanner() {
       if (cameraBusy || isScanning) return;
-      initAudio(); // تفعيل سياق الصوت بلمسة المستخدم
+      clearInterval(diagnosticTimer);
+      diagnosis = newDiagnosis();
+      diagnosis.state = 'starting';
+      diagnosticEvent('طلب فتح الكاميرا');
+      refreshDiagnostics();
+      try { initAudio(); } catch { diagnosticEvent('تعذّر تفعيل الصوت'); }
       const errorBox = document.getElementById('cameraErrorBox');
       const errorText = document.getElementById('cameraErrorText');
       errorBox.classList.add('hidden');
@@ -454,11 +616,16 @@
       const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
       if (location.protocol !== 'https:' && !isLocalhost) {
         errorText.textContent = 'الوصول إلى الكاميرا يتطلب فتح الصفحة عبر رابط آمن (HTTPS) أو خادم محلي (localhost).';
+        diagnosis.state = 'failed';
+        diagnosis.cause = errorText.textContent;
+        diagnosticEvent(diagnosis.cause);
+        refreshDiagnostics();
         errorBox.classList.remove('hidden');
         return;
       }
 
       cameraBusy = true;
+      diagnosticTimer = setInterval(refreshDiagnostics, 1000);
       document.getElementById('startScanBtn').disabled = true;
       try {
         if (!html5QrCode) {
@@ -487,15 +654,22 @@
           height: { ideal: 720 },
           advanced: [{ focusMode: 'continuous' }]
         };
-        // من دون qrbox تفحص المكتبة كامل إطار المعاينة.
+        // طابق مساحة الفحص مع الجزء المرئي من الفيديو من دون تشويه نسب الصورة.
+        const cameraBox = document.getElementById('cameraContainer');
         await html5QrCode.start(
           selectedCameraId || { facingMode: 'environment' },
-          { fps: 12, videoConstraints },
+          { fps: 12, videoConstraints, qrbox: (width, height) => ({
+            width: Math.min(width, cameraBox.clientWidth),
+            height: Math.min(height, cameraBox.clientHeight)
+          }) },
           onScanSuccess,
-          () => {}
+          noteScanMiss
         );
 
         isScanning = true;
+        diagnosis.state = 'running';
+        diagnosticEvent('بدأ بث الكاميرا');
+        refreshDiagnostics();
         document.getElementById('cameraPlaceholder').classList.add('hidden');
         document.getElementById('laserOverlay').classList.remove('hidden');
         document.getElementById('stopScanBtn').disabled = false;
@@ -514,13 +688,12 @@
 
       } catch (err) {
         console.error('خطأ الكاميرا:', err);
-        let msg = 'تعذّر فتح الكاميرا. تأكد من السماح للمتصفح باستخدام الكاميرا.';
-        if (err && err.name === 'NotAllowedError') {
-          msg = 'تم رفض إذن الكاميرا. يرجى تفعيل إذن الكاميرا من إعدادات المتصفح ثم إعادة المحاولة.';
-        } else if (err && err.name === 'NotFoundError') {
-          msg = 'لم يتم العثور على كاميرا متصلة بهذا الجهاز.';
-        }
-        errorText.textContent = msg;
+        clearInterval(diagnosticTimer);
+        diagnosis.state = 'failed';
+        diagnosis.cause = cameraFailure(err);
+        diagnosticEvent(diagnosis.cause);
+        refreshDiagnostics();
+        errorText.textContent = diagnosis.cause;
         errorBox.classList.remove('hidden');
         selectedCameraId = '';
       } finally {
@@ -533,6 +706,7 @@
       if (cameraBusy || !isScanning) return;
       cameraBusy = true;
       try {
+        refreshDiagnostics();
         if (isTorchOn) {
           await toggleTorch(false);
         }
@@ -544,6 +718,10 @@
         cameraBusy = false;
       }
       isScanning = false;
+      clearInterval(diagnosticTimer);
+      diagnosticEvent('قبل الإيقاف: ' + diagnosisSummary());
+      diagnosis.state = 'stopped';
+      refreshDiagnostics();
       document.getElementById('cameraPlaceholder').classList.remove('hidden');
       document.getElementById('laserOverlay').classList.add('hidden');
       document.getElementById('stopScanBtn').disabled = true;
@@ -603,9 +781,17 @@
     // ==========================================
     // 4. آلة الحالات السريعة (Step 1 ESL -> Step 2 Product)
     // ==========================================
-    function onScanSuccess(decodedText) {
+    function onScanSuccess(decodedText, decodedResult) {
       const cleanCode = decodedText.trim();
-      if (!cleanCode || cleanCode === lastAcceptedCode || cleanCode === stagedEslCode) return;
+      diagnosis.lastAttempt = performance.now();
+      if (!cleanCode) { diagnosis.misses++; return; }
+      diagnosis.lastGood = diagnosis.lastAttempt;
+      if (cleanCode === lastAcceptedCode || cleanCode === stagedEslCode) { diagnosis.repeats++; return; }
+      diagnosis.accepted++;
+      const result = decodedResult?.result;
+      const format = result?.format?.formatName || 'غير معروف';
+      const decoder = result?.debugData?.decoderName || 'غير معروف';
+      diagnosticEvent('التقط ' + (scanStep === 'ESL' ? 'ملصق ESL' : 'باركود المنتج') + ' · ' + format + ' / ' + decoder);
       lastAcceptedCode = cleanCode;
 
       // تأثير بصري سريع على إطار الكاميرا
