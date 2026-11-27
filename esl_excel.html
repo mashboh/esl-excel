@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>ماسح ربط ESL والمنتجات السريع | Excel</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Google Fonts: Cairo -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  
+  <!-- html5-qrcode Library -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  
+  <!-- SheetJS (xlsx) Library -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Cairo', 'sans-serif'],
+          },
+        }
+      }
+    }
+  </script>
+
+  <style>
+    body {
+      font-family: 'Cairo', sans-serif;
+      background-color: #f1f5f9;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* تخصيص حاوية الكاميرا لتناسب شاشة الجوال بسلاسة */
+    #reader {
+      width: 100% !important;
+      border: none !important;
+      border-radius: 1rem;
+      overflow: hidden;
+      background: #0f172a;
+    }
+
+    #reader video {
+      object-fit: cover !important;
+      width: 100% !important;
+      height: 100% !important;
+      border-radius: 1rem;
+    }
+
+    /* إخفاء عناصر مكتبة html5-qrcode الافتراضية غير المرغوبة */
+    #reader__dashboard_section_csr span,
+    #reader__dashboard_section_swaplink,
+    #reader__header_message {
+      display: none !important;
+    }
+
+    /* تأثير وميض عند التقاط الباركود بنجاح */
+    @keyframes scanFlash {
+      0% { box-shadow: inset 0 0 0 8px rgba(34, 197, 94, 0.95); }
+      100% { box-shadow: inset 0 0 0 0px rgba(34, 197, 94, 0); }
+    }
+    .flash-success {
+      animation: scanFlash 0.55s ease-out;
+    }
+
+    /* خط ليزر متحرك داخل إطار المسح */
+    @keyframes scanLine {
+      0%, 100% { top: 15%; }
+      50% { top: 82%; }
+    }
+    .laser-line {
+      position: absolute;
+      left: 10%;
+      right: 10%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #ef4444, #f87171, #ef4444, transparent);
+      box-shadow: 0 0 8px #ef4444;
+      animation: scanLine 2s infinite ease-in-out;
+      pointer-events: none;
+      z-index: 20;
+    }
+  </style>
+</head>
+<body class="text-slate-800 min-h-screen flex flex-col">
+
+  <!-- الشريط العلوي المدمج -->
+  <header class="bg-slate-900 text-white px-4 py-2.5 shadow-md sticky top-0 z-40">
+    <div class="max-w-2xl mx-auto flex items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <div class="bg-indigo-600 p-1.5 rounded-lg">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 7V5a2 2 0 012-2h2m10 0h2a2 2 0 012 2v2m0 10v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2M7 12h10" />
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-base sm:text-lg font-extrabold leading-tight">ماسح ربط ESL السريع</h1>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <!-- زر كتم/تفعيل الصوت -->
+        <button id="soundToggleBtn" onclick="toggleSound()" title="الصوت" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-400 transition">
+          <svg id="soundOnIcon" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+          </svg>
+          <svg id="soundOffIcon" class="w-5 h-5 hidden text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15zM17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+          </svg>
+        </button>
+
+        <!-- شارة إجمالي الصفوف -->
+        <div class="bg-indigo-600/30 border border-indigo-400/40 px-3 py-1 rounded-full text-xs sm:text-sm font-bold text-indigo-100">
+          إجمالي الصفوف: <span id="totalCountBadge" class="text-white font-black text-sm sm:text-base">0</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- المحتوى الرئيسي -->
+  <main class="flex-1 max-w-2xl w-full mx-auto px-3 py-3 space-y-3">
+
+    <!-- 1. لافتة الحالة الديناميكية (الخطوة 1 أو الخطوة 2) -->
+    <section id="stepBanner" class="rounded-2xl p-3.5 sm:p-4 text-white shadow-lg transition-all duration-300 bg-gradient-to-l from-indigo-600 to-blue-600 border-2 border-indigo-400/50">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-3">
+          <div id="stepNumberCircle" class="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-white/20 backdrop-blur flex items-center justify-center font-black text-xl shrink-0">
+            1
+          </div>
+          <div>
+            <p id="stepSubLabel" class="text-xs font-semibold text-blue-100 opacity-90">الخطوة الأولى — ملصق السعر الإلكتروني</p>
+            <h2 id="stepMainTitle" class="text-lg sm:text-xl font-black tracking-wide">1. صوّر باركود الـ ESL</h2>
+          </div>
+        </div>
+
+        <!-- زر إلغاء / إعادة ESL يظهر فقط في الخطوة الثانية -->
+        <button id="cancelEslBtn" onclick="resetToStep1()" class="hidden bg-white/20 hover:bg-white/30 active:scale-95 text-white text-xs sm:text-sm font-bold px-3 py-2 rounded-xl border border-white/30 transition shrink-0">
+          إلغاء / إعادة ESL
+        </button>
+      </div>
+
+      <!-- بطاقة عرض باركود ESL الملتقط أثناء انتظار المنتج -->
+      <div id="stagingEslCard" class="hidden mt-3 pt-2.5 border-t border-white/25 flex items-center justify-between text-xs sm:text-sm">
+        <span class="text-amber-100 font-semibold">تم التقاط ESL:</span>
+        <span id="stagedEslValue" dir="ltr" class="font-mono font-black bg-black/25 px-2.5 py-1 rounded-lg text-white tracking-wider">---</span>
+      </div>
+    </section>
+
+    <!-- 2. منطقة الكاميرا والتحكم المباشر -->
+    <section class="bg-white rounded-2xl p-2.5 shadow-sm border border-slate-200 relative">
+      <!-- حاوية الكاميرا -->
+      <div id="cameraContainer" class="relative w-full h-56 sm:h-64 bg-slate-900 rounded-xl overflow-hidden flex items-center justify-center">
+        <div id="reader" class="w-full h-full"></div>
+        
+        <!-- خط الليزر الوهمي أثناء التشغيل -->
+        <div id="laserOverlay" class="laser-line hidden"></div>
+
+        <!-- شاشة البداية قبل فتح الكاميرا -->
+        <div id="cameraPlaceholder" class="absolute inset-0 flex flex-col items-center justify-center p-4 text-center bg-slate-900 text-white z-10">
+          <div class="w-14 h-14 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center mb-3">
+            <svg class="w-8 h-8 text-indigo-400" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </div>
+          <button id="startScanBtn" onclick="startScanner()" class="bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white font-extrabold text-base px-6 py-3 rounded-xl shadow-lg shadow-emerald-500/30 transition flex items-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            بدء المسح / فتح الكاميرا
+          </button>
+          <p class="text-xs text-slate-400 mt-2">يدعم باركود المنتجات (1D) وملصقات ESL (QR / DataMatrix)</p>
+        </div>
+
+        <!-- تنبيه فترة التهدئة القصيرة لمنع التكرار -->
+        <div id="cooldownBadge" class="hidden absolute bottom-2.5 left-1/2 -translate-x-1/2 bg-emerald-600/95 text-white text-xs font-bold px-3 py-1 rounded-full shadow-md z-30 whitespace-nowrap">
+          تم التقاط ESL! وجّه الكاميرا للمنتج...
+        </div>
+      </div>
+
+      <!-- رسالة خطأ الكاميرا (HTTPS أو الصلاحيات) -->
+      <div id="cameraErrorBox" class="hidden mt-2.5 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs sm:text-sm">
+        <p class="font-bold mb-1">تعذّر تشغيل الكاميرا:</p>
+        <p id="cameraErrorText">يرجى التأكد من منح صلاحية الكاميرا للمتصفح، وأن الصفحة تعمل عبر اتصال آمن (HTTPS أو localhost).</p>
+      </div>
+
+      <!-- أزرار التحكم بالكاميرا (إيقاف / تبديل الكاميرا / الفلاش / إدخال يدوي) -->
+      <div class="grid grid-cols-4 gap-1.5 mt-2.5">
+        <button id="stopScanBtn" onclick="stopScanner()" disabled class="disabled:opacity-40 bg-rose-100 hover:bg-rose-200 text-rose-700 font-bold text-xs py-2.5 px-2 rounded-xl transition flex flex-col items-center justify-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+          </svg>
+          <span>إيقاف</span>
+        </button>
+
+        <button id="switchCamBtn" onclick="switchCamera()" disabled class="disabled:opacity-40 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 px-2 rounded-xl transition flex flex-col items-center justify-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          <span>تبديل كاميرا</span>
+        </button>
+
+        <button id="torchBtn" onclick="toggleTorch()" disabled class="disabled:opacity-40 bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold text-xs py-2.5 px-2 rounded-xl transition flex flex-col items-center justify-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+          </svg>
+          <span id="torchLabel">الفلاش</span>
+        </button>
+
+        <button onclick="toggleManualPanel()" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs py-2.5 px-2 rounded-xl transition flex flex-col items-center justify-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          <span>إدخال يدوي</span>
+        </button>
+      </div>
+
+      <!-- لوحة الإدخال اليدوي البديلة (في حال تلف الباركود) -->
+      <div id="manualInputPanel" class="hidden mt-3 pt-3 border-t border-slate-200">
+        <form onsubmit="handleManualSubmit(event)" class="space-y-2">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label class="block text-xs font-bold text-slate-600 mb-1">باركود ESL (يدوي)</label>
+              <input id="manualEslInput" type="text" dir="ltr" placeholder="أدخل كود ESL..." class="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none font-mono" />
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-slate-600 mb-1">باركود المنتج (يدوي)</label>
+              <input id="manualProductInput" type="text" dir="ltr" placeholder="أدخل باركود المنتج..." class="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none font-mono" />
+            </div>
+          </div>
+          <div class="flex justify-end gap-2">
+            <button type="button" onclick="toggleManualPanel()" class="px-3 py-1.5 text-xs font-bold text-slate-600 bg-slate-100 rounded-lg">إغلاق</button>
+            <button type="submit" class="px-4 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg">إضافة للصفوف</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- 3. أزرار التصدير إلى Excel وإدارة البيانات -->
+    <section class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center gap-2 flex-1 min-w-[210px]">
+        <button onclick="exportToExcel()" class="flex-1 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white font-extrabold text-sm py-3 px-4 rounded-xl shadow-sm transition flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          تصدير إلى Excel (.xlsx)
+        </button>
+
+        <button onclick="exportToCSV()" title="تصدير CSV" class="bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold text-xs py-3 px-3 rounded-xl shadow-sm transition">
+          CSV
+        </button>
+      </div>
+
+      <button onclick="openClearConfirm()" class="bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 font-bold text-xs py-3 px-3.5 rounded-xl transition flex items-center gap-1.5">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+        مسح الكل
+      </button>
+    </section>
+
+    <!-- 4. الجدول المباشر للصفوف المربوطة -->
+    <section class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+      <div class="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <h3 class="text-sm font-extrabold text-slate-700">سجل الربط المباشر</h3>
+        <span class="text-[11px] text-slate-500">اضغط على أي باركود للتعديل المباشر</span>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-right border-collapse">
+          <thead>
+            <tr class="bg-slate-100/80 text-slate-600 text-xs font-extrabold border-b border-slate-200">
+              <th class="py-2.5 px-2.5 text-center w-10">#</th>
+              <th class="py-2.5 px-2.5">باركود ESL</th>
+              <th class="py-2.5 px-2.5">باركود المنتج</th>
+              <th class="py-2.5 px-2 text-center w-16">الوقت</th>
+              <th class="py-2.5 px-2 text-center w-12">حذف</th>
+            </tr>
+          </thead>
+          <tbody id="recordsTableBody" class="divide-y divide-slate-100 text-xs sm:text-sm">
+            <!-- يتم توليد الصفوف هنا ديناميكياً -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- حالة الجدول الفارغ -->
+      <div id="emptyTableState" class="py-10 px-4 text-center text-slate-400">
+        <p class="text-sm font-bold text-slate-500">لا توجد بيانات مسجلة حتى الآن</p>
+        <p class="text-xs mt-1">افتح الكاميرا وصوّر باركود الـ ESL أولاً ثم باركود المنتج</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- نافذة تأكيد مخصصة لمسح الكل (بديلة لـ confirm) -->
+  <div id="clearConfirmModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4">
+      <div class="flex items-center gap-3 text-rose-600">
+        <div class="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center shrink-0">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+        </div>
+        <div>
+          <h4 class="font-extrabold text-base text-slate-800">تأكيد مسح جميع البيانات</h4>
+          <p class="text-xs text-slate-500 mt-0.5">هل أنت متأكد من حذف جميع الصفوف المسجلة؟ لا يمكن التراجع عن هذا الإجراء.</p>
+        </div>
+      </div>
+      <div class="flex items-center justify-end gap-2 pt-2">
+        <button onclick="closeClearConfirm()" class="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition">إلغاء</button>
+        <button onclick="confirmClearAll()" class="px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white transition">نعم، امسح الكل</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- إشعار منبثق صغير (Toast) -->
+  <div id="toastNotification" class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs sm:text-sm font-bold px-4 py-2.5 rounded-full shadow-xl opacity-0 pointer-events-none transition-opacity duration-300 z-50 whitespace-nowrap">
+    رسالة تنبيه
+  </div>
+
+  <script>
+    // ==========================================
+    // 1. إدارة الحالة والتخزين المحلي (State & Storage)
+    // ==========================================
+    const STORAGE_KEY = 'esl_product_pairs_v1';
+    let scannedPairs = []; // مصفوفة الكائنات: { id, esl, product, time }
+    
+    // حالة آلة المسح ذات الخطوتين: 'ESL' أو 'PRODUCT'
+    let scanStep = 'ESL';
+    let stagedEslCode = '';
+    
+    // متغيرات منع التكرار السريع (Cooldown)
+    let isCooldown = false;
+    let lastScannedCode = '';
+    let lastScanTimestamp = 0;
+
+    // متغيرات الكاميرا والصوت
+    let html5QrCode = null;
+    let isScanning = false;
+    let camerasList = [];
+    let currentCameraIndex = 0;
+    let isTorchOn = false;
+    let isSoundEnabled = true;
+    let audioCtx = null;
+
+    // تحميل البيانات المحفوظة عند بدء الصفحة
+    window.addEventListener('DOMContentLoaded', () => {
+      loadFromStorage();
+      renderTable();
+      updateStepUI();
+    });
+
+    function loadFromStorage() {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          scannedPairs = JSON.parse(saved);
+        }
+      } catch (e) {
+        console.error('فشل تحميل البيانات من التخزين المحلي:', e);
+        scannedPairs = [];
+      }
+    }
+
+    function saveToStorage() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(scannedPairs));
+      } catch (e) {
+        console.error('فشل حفظ البيانات في التخزين المحلي:', e);
+      }
+    }
+
+    // ==========================================
+    // 2. المؤثرات الصوتية والاهتزاز (Web Audio API)
+    // ==========================================
+    function initAudio() {
+      if (!audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (AudioContext) {
+          audioCtx = new AudioContext();
+        }
+      }
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    function playBeep(type) {
+      if (!isSoundEnabled) return;
+      try {
+        initAudio();
+        if (!audioCtx) return;
+
+        const now = audioCtx.currentTime;
+        if (type === 'esl') {
+          // نغمة واحدة واضحة لالتقاط ESL
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(880, now); // A5
+          gain.gain.setValueAtTime(0.25, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start(now);
+          osc.stop(now + 0.15);
+        } else if (type === 'product') {
+          // نغمة مزدوجة مرتفعة لتأكيد اكتمال الصف (ESL + منتج)
+          [1046.5, 1318.5].forEach((freq, idx) => { // C6 -> E6
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(freq, now + idx * 0.11);
+            gain.gain.setValueAtTime(0.3, now + idx * 0.11);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.11 + 0.13);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(now + idx * 0.11);
+            osc.stop(now + idx * 0.11 + 0.14);
+          });
+        }
+      } catch (e) {
+        console.warn('تعذر تشغيل الصوت:', e);
+      }
+    }
+
+    function toggleSound() {
+      isSoundEnabled = !isSoundEnabled;
+      document.getElementById('soundOnIcon').classList.toggle('hidden', !isSoundEnabled);
+      document.getElementById('soundOffIcon').classList.toggle('hidden', isSoundEnabled);
+      showToast(isSoundEnabled ? 'تم تفعيل الصوت' : 'تم كتم الصوت');
+    }
+
+    // ==========================================
+    // 3. إدارة الكاميرا والمسح المستمر (html5-qrcode)
+    // ==========================================
+    async function startScanner() {
+      initAudio(); // تفعيل سياق الصوت بلمسة المستخدم
+      const errorBox = document.getElementById('cameraErrorBox');
+      const errorText = document.getElementById('cameraErrorText');
+      errorBox.classList.add('hidden');
+
+      // التحقق من بيئة HTTPS أو localhost
+      const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+      if (location.protocol !== 'https:' && !isLocalhost) {
+        errorText.textContent = 'الوصول إلى الكاميرا يتطلب فتح الصفحة عبر رابط آمن (HTTPS) أو خادم محلي (localhost).';
+        errorBox.classList.remove('hidden');
+        return;
+      }
+
+      try {
+        if (!html5QrCode) {
+          // تهيئة المكتبة لدعم كافة أنواع الباركود (1D للمنتجات و 2D لـ ESL)
+          const formatsToSupport = [
+            Html5QrcodeSupportedFormats.QR_CODE,
+            Html5QrcodeSupportedFormats.DATA_MATRIX,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.ITF
+          ];
+          html5QrCode = new Html5Qrcode("reader", {
+            formatsToSupport: formatsToSupport,
+            verbose: false
+          });
+        }
+
+        // جلب قائمة الكاميرات لاختيار الخلفية تلقائياً
+        if (camerasList.length === 0) {
+          camerasList = await Html5Qrcode.getCameras();
+          if (camerasList && camerasList.length > 0) {
+            // البحث عن الكاميرا الخلفية
+            const backCamIndex = camerasList.findIndex(c =>
+              c.label.toLowerCase().includes('back') ||
+              c.label.toLowerCase().includes('rear') ||
+              c.label.toLowerCase().includes('environment') ||
+              c.label.includes('خلفية')
+            );
+            currentCameraIndex = backCamIndex !== -1 ? backCamIndex : camerasList.length - 1;
+          }
+        }
+
+        const config = {
+          fps: 20, // معدل إطارات مرتفع لالتقاط سريع جداً
+          qrbox: function(viewfinderWidth, viewfinderHeight) {
+            // مربع مسح عريض يناسب باركود المنتجات الطويل و QR معاً
+            const width = Math.min(viewfinderWidth * 0.85, 340);
+            const height = Math.min(viewfinderHeight * 0.65, 190);
+            return { width: Math.floor(width), height: Math.floor(height) };
+          },
+          aspectRatio: 1.5
+        };
+
+        const cameraConstraint = camerasList.length > 0
+          ? { deviceId: { exact: camerasList[currentCameraIndex].id } }
+          : { facingMode: "environment" };
+
+        await html5QrCode.start(
+          cameraConstraint,
+          config,
+          onScanSuccess,
+          () => {} // تجاهل أخطاء الإطارات الفارغة لزيادة السرعة
+        );
+
+        isScanning = true;
+        document.getElementById('cameraPlaceholder').classList.add('hidden');
+        document.getElementById('laserOverlay').classList.remove('hidden');
+        document.getElementById('stopScanBtn').disabled = false;
+        document.getElementById('switchCamBtn').disabled = camerasList.length <= 1;
+        
+        // التحقق من دعم الفلاش (Torch)
+        checkTorchSupport();
+
+      } catch (err) {
+        console.error('خطأ الكاميرا:', err);
+        let msg = 'تعذّر فتح الكاميرا. تأكد من السماح للمتصفح باستخدام الكاميرا.';
+        if (err && err.name === 'NotAllowedError') {
+          msg = 'تم رفض إذن الكاميرا. يرجى تفعيل إذن الكاميرا من إعدادات المتصفح ثم إعادة المحاولة.';
+        } else if (err && err.name === 'NotFoundError') {
+          msg = 'لم يتم العثور على كاميرا متصلة بهذا الجهاز.';
+        }
+        errorText.textContent = msg;
+        errorBox.classList.remove('hidden');
+      }
+    }
+
+    async function stopScanner() {
+      if (html5QrCode && isScanning) {
+        try {
+          if (isTorchOn) {
+            await toggleTorch(false);
+          }
+          await html5QrCode.stop();
+        } catch (e) {
+          console.warn('خطأ أثناء إيقاف الكاميرا:', e);
+        }
+      }
+      isScanning = false;
+      document.getElementById('cameraPlaceholder').classList.remove('hidden');
+      document.getElementById('laserOverlay').classList.add('hidden');
+      document.getElementById('stopScanBtn').disabled = true;
+      document.getElementById('switchCamBtn').disabled = true;
+      document.getElementById('torchBtn').disabled = true;
+    }
+
+    async function switchCamera() {
+      if (camerasList.length <= 1) return;
+      currentCameraIndex = (currentCameraIndex + 1) % camerasList.length;
+      await stopScanner();
+      await startScanner();
+      showToast('تم تبديل الكاميرا');
+    }
+
+    function checkTorchSupport() {
+      const torchBtn = document.getElementById('torchBtn');
+      try {
+        const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
+        if (capabilities && capabilities.torchFeature && capabilities.torchFeature().isSupported()) {
+          torchBtn.disabled = false;
+        } else {
+          torchBtn.disabled = true;
+        }
+      } catch (e) {
+        torchBtn.disabled = true;
+      }
+    }
+
+    async function toggleTorch(forceState = null) {
+      if (!html5QrCode || !isScanning) return;
+      try {
+        const nextState = forceState !== null ? forceState : !isTorchOn;
+        await html5QrCode.applyVideoConstraints({
+          advanced: [{ torch: nextState }]
+        });
+        isTorchOn = nextState;
+        const torchBtn = document.getElementById('torchBtn');
+        const torchLabel = document.getElementById('torchLabel');
+        if (isTorchOn) {
+          torchBtn.classList.replace('bg-amber-100', 'bg-amber-500');
+          torchBtn.classList.replace('text-amber-800', 'text-white');
+          torchLabel.textContent = 'إطفاء الفلاش';
+        } else {
+          torchBtn.classList.replace('bg-amber-500', 'bg-amber-100');
+          torchBtn.classList.replace('text-white', 'text-amber-800');
+          torchLabel.textContent = 'الفلاش';
+        }
+      } catch (e) {
+        showToast('الفلاش غير مدعوم على هذه الكاميرا');
+      }
+    }
+
+    // ==========================================
+    // 4. آلة الحالات السريعة (Step 1 ESL -> Step 2 Product)
+    // ==========================================
+    function onScanSuccess(decodedText) {
+      const cleanCode = decodedText.trim();
+      if (!cleanCode) return;
+
+      const now = Date.now();
+
+      // منع القراءة المكررة لنفس الكود خلال فترة التهدئة (850ms)
+      if (isCooldown) return;
+      if (cleanCode === lastScannedCode && (now - lastScanTimestamp) < 1200) return;
+
+      lastScannedCode = cleanCode;
+      lastScanTimestamp = now;
+
+      // تأثير بصري سريع على إطار الكاميرا
+      triggerCameraFlash();
+
+      if (scanStep === 'ESL') {
+        // --- الخطوة 1: التقاط باركود ESL ---
+        stagedEslCode = cleanCode;
+        scanStep = 'PRODUCT';
+        
+        playBeep('esl');
+        if (navigator.vibrate) navigator.vibrate(100);
+
+        updateStepUI();
+
+        // تفعيل فترة تهدئة 850ms حتى لا يُقرأ نفس باركود ESL كمنتج بالخطأ
+        isCooldown = true;
+        const cooldownBadge = document.getElementById('cooldownBadge');
+        cooldownBadge.classList.remove('hidden');
+
+        setTimeout(() => {
+          isCooldown = false;
+          cooldownBadge.classList.add('hidden');
+        }, 850);
+
+      } else if (scanStep === 'PRODUCT') {
+        // منع التقاط نفس كود ESL كمنتج عن طريق الخطأ
+        if (cleanCode === stagedEslCode) {
+          showToast('هذا هو نفس باركود ESL! صوّر باركود المنتج');
+          isCooldown = true;
+          setTimeout(() => { isCooldown = false; }, 700);
+          return;
+        }
+
+        // --- الخطوة 2: التقاط باركود المنتج وإضافته للجدول ---
+        playBeep('product');
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+
+        addCompletedPair(stagedEslCode, cleanCode);
+
+        // إعادة الضبط التلقائي للخطوة 1 للصف التالي فوراً
+        stagedEslCode = '';
+        scanStep = 'ESL';
+        updateStepUI();
+
+        // فترة تهدئة قصيرة (750ms) قبل بدء الصف الجديد
+        isCooldown = true;
+        setTimeout(() => {
+          isCooldown = false;
+        }, 750);
+      }
+    }
+
+    function triggerCameraFlash() {
+      const container = document.getElementById('cameraContainer');
+      container.classList.remove('flash-success');
+      void container.offsetWidth; // إعادة تشغيل الأنيميشن
+      container.classList.add('flash-success');
+    }
+
+    function resetToStep1() {
+      stagedEslCode = '';
+      scanStep = 'ESL';
+      isCooldown = false;
+      document.getElementById('cooldownBadge').classList.add('hidden');
+      updateStepUI();
+      showToast('تم إلغاء ESL، جاهز لمسح ESL جديد');
+    }
+
+    function updateStepUI() {
+      const banner = document.getElementById('stepBanner');
+      const circle = document.getElementById('stepNumberCircle');
+      const subLabel = document.getElementById('stepSubLabel');
+      const mainTitle = document.getElementById('stepMainTitle');
+      const cancelBtn = document.getElementById('cancelEslBtn');
+      const stagingCard = document.getElementById('stagingEslCard');
+      const stagedVal = document.getElementById('stagedEslValue');
+
+      if (scanStep === 'ESL') {
+        banner.className = 'rounded-2xl p-3.5 sm:p-4 text-white shadow-lg transition-all duration-300 bg-gradient-to-l from-indigo-600 to-blue-600 border-2 border-indigo-400/50';
+        circle.textContent = '1';
+        subLabel.textContent = 'الخطوة الأولى — ملصق السعر الإلكتروني';
+        subLabel.className = 'text-xs font-semibold text-blue-100 opacity-90';
+        mainTitle.textContent = '1. صوّر باركود الـ ESL';
+        cancelBtn.classList.add('hidden');
+        stagingCard.classList.add('hidden');
+      } else {
+        banner.className = 'rounded-2xl p-3.5 sm:p-4 text-white shadow-lg transition-all duration-300 bg-gradient-to-l from-amber-500 to-orange-600 border-2 border-amber-300/60';
+        circle.textContent = '2';
+        subLabel.textContent = 'الخطوة الثانية — السلعة / العبوة';
+        subLabel.className = 'text-xs font-semibold text-amber-100 opacity-95';
+        mainTitle.textContent = '2. صوّر باركود المنتج';
+        cancelBtn.classList.remove('hidden');
+        stagingCard.classList.remove('hidden');
+        stagedVal.textContent = stagedEslCode;
+      }
+    }
+
+    // ==========================================
+    // 5. إدارة الجدول والتعديل المباشر (Table & Editing)
+    // ==========================================
+    function formatCurrentTime() {
+      const now = new Date();
+      return now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    function addCompletedPair(eslCode, productCode) {
+      const newEntry = {
+        id: Date.now() + Math.random().toString(36).substring(2, 6),
+        esl: eslCode,
+        product: productCode,
+        time: formatCurrentTime()
+      };
+
+      // الإضافة في بداية المصفوفة ليظهر أحدث صف في الأعلى مباشرة
+      scannedPairs.unshift(newEntry);
+      saveToStorage();
+      renderTable();
+      showToast(`تم ربط الصف #${scannedPairs.length} بنجاح`);
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById('recordsTableBody');
+      const emptyState = document.getElementById('emptyTableState');
+      const badge = document.getElementById('totalCountBadge');
+
+      badge.textContent = scannedPairs.length;
+
+      if (scannedPairs.length === 0) {
+        tbody.innerHTML = '';
+        emptyState.classList.remove('hidden');
+        return;
+      }
+
+      emptyState.classList.add('hidden');
+      const total = scannedPairs.length;
+
+      tbody.innerHTML = scannedPairs.map((item, index) => {
+        const rowNumber = total - index; // ترقيم تصاعدي حيث الأحدث يحمل الرقم الأكبر
+        const isNewest = index === 0;
+        return `
+          <tr class="${isNewest ? 'bg-emerald-50/70' : 'hover:bg-slate-50'} transition-colors">
+            <td class="py-2.5 px-2.5 text-center font-extrabold text-slate-500">${rowNumber}</td>
+            <td class="py-2 px-2">
+              <input 
+                type="text" 
+                dir="ltr"
+                value="${escapeHtml(item.esl)}" 
+                onchange="updateCell('${item.id}', 'esl', this.value)"
+                class="w-full bg-transparent hover:bg-white focus:bg-white border border-transparent focus:border-indigo-400 rounded-lg px-2 py-1 font-mono font-bold text-indigo-700 text-xs sm:text-sm outline-none transition"
+              />
+            </td>
+            <td class="py-2 px-2">
+              <input 
+                type="text" 
+                dir="ltr"
+                value="${escapeHtml(item.product)}" 
+                onchange="updateCell('${item.id}', 'product', this.value)"
+                class="w-full bg-transparent hover:bg-white focus:bg-white border border-transparent focus:border-emerald-400 rounded-lg px-2 py-1 font-mono font-bold text-slate-800 text-xs sm:text-sm outline-none transition"
+              />
+            </td>
+            <td class="py-2.5 px-2 text-center text-[11px] font-mono text-slate-500 whitespace-nowrap">${item.time}</td>
+            <td class="py-2.5 px-2 text-center">
+              <button onclick="deleteRow('${item.id}')" title="حذف الصف" class="p-1.5 text-rose-500 hover:bg-rose-100 rounded-lg transition">
+                <svg class="w-4 h-4 mx-auto" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function updateCell(id, field, newValue) {
+      const trimmed = newValue.trim();
+      const target = scannedPairs.find(item => item.id === id);
+      if (target && trimmed) {
+        target[field] = trimmed;
+        saveToStorage();
+        showToast('تم حفظ التعديل');
+      } else {
+        renderTable(); // استعادة القيمة السابقة إذا تركت فارغة
+      }
+    }
+
+    function deleteRow(id) {
+      scannedPairs = scannedPairs.filter(item => item.id !== id);
+      saveToStorage();
+      renderTable();
+      showToast('تم حذف الصف');
+    }
+
+    // ==========================================
+    // 6. الإدخال اليدوي ونوافذ التأكيد
+    // ==========================================
+    function toggleManualPanel() {
+      const panel = document.getElementById('manualInputPanel');
+      panel.classList.toggle('hidden');
+      if (!panel.classList.contains('hidden')) {
+        // تعبئة حقل ESL تلقائياً إذا كان ملتقطاً بالفعل في الخطوة 2
+        if (scanStep === 'PRODUCT' && stagedEslCode) {
+          document.getElementById('manualEslInput').value = stagedEslCode;
+          document.getElementById('manualProductInput').focus();
+        } else {
+          document.getElementById('manualEslInput').focus();
+        }
+      }
+    }
+
+    function handleManualSubmit(e) {
+      e.preventDefault();
+      const eslInput = document.getElementById('manualEslInput');
+      const prodInput = document.getElementById('manualProductInput');
+      const eslVal = eslInput.value.trim();
+      const prodVal = prodInput.value.trim();
+
+      if (!eslVal || !prodVal) {
+        showToast('يرجى إدخال باركود ESL وباركود المنتج معاً');
+        return;
+      }
+
+      playBeep('product');
+      addCompletedPair(eslVal, prodVal);
+
+      eslInput.value = '';
+      prodInput.value = '';
+      resetToStep1();
+      document.getElementById('manualInputPanel').classList.add('hidden');
+    }
+
+    function openClearConfirm() {
+      if (scannedPairs.length === 0) {
+        showToast('الجدول فارغ بالفعل');
+        return;
+      }
+      document.getElementById('clearConfirmModal').classList.remove('hidden');
+    }
+
+    function closeClearConfirm() {
+      document.getElementById('clearConfirmModal').classList.add('hidden');
+    }
+
+    function confirmClearAll() {
+      scannedPairs = [];
+      saveToStorage();
+      renderTable();
+      resetToStep1();
+      closeClearConfirm();
+      showToast('تم مسح جميع الصفوف');
+    }
+
+    // ==========================================
+    // 7. التصدير إلى Excel (.xlsx) و CSV
+    // ==========================================
+    function getOrderedExportData() {
+      // عكس الترتيب عند التصدير ليكون من الصف 1 إلى الأخير بشكل منطقي في ملف الإكسل
+      const chronological = [...scannedPairs].reverse();
+      return chronological.map((item, idx) => ({
+        'م': idx + 1,
+        'باركود ESL': item.esl,
+        'باركود المنتج': item.product,
+        'وقت المسح': item.time
+      }));
+    }
+
+    function getFormattedDateFilename(ext) {
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      return `ESL_Products_${yyyy}-${mm}-${dd}.${ext}`;
+    }
+
+    function exportToExcel() {
+      if (scannedPairs.length === 0) {
+        showToast('لا توجد بيانات لتصديرها!');
+        return;
+      }
+
+      try {
+        const rows = getOrderedExportData();
+        const worksheet = XLSX.utils.json_to_sheet(rows);
+
+        // ضبط عرض الأعمدة لتظهر أرقام الباركود كاملة بدون اختصار
+        worksheet['!cols'] = [
+          { wch: 6 },  // م
+          { wch: 24 }, // باركود ESL
+          { wch: 24 }, // باركود المنتج
+          { wch: 14 }  // وقت المسح
+        ];
+
+        // تفعيل اتجاه الورقة من اليمين إلى اليسار (RTL) في Excel
+        if (!worksheet['!views']) worksheet['!views'] = [];
+        worksheet['!views'].push({ rightToLeft: true });
+
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'ربط ESL والمنتجات');
+
+        XLSX.writeFile(workbook, getFormattedDateFilename('xlsx'));
+        showToast('تم تصدير ملف Excel بنجاح!');
+      } catch (err) {
+        console.error('خطأ التصدير إلى Excel:', err);
+        showToast('حدث خطأ أثناء إنشاء ملف Excel');
+      }
+    }
+
+    function exportToCSV() {
+      if (scannedPairs.length === 0) {
+        showToast('لا توجد بيانات لتصديرها!');
+        return;
+      }
+
+      const rows = getOrderedExportData();
+      const headers = ['م', 'باركود ESL', 'باركود المنتج', 'وقت المسح'];
+      const csvLines = [
+        headers.join(','),
+        ...rows.map(r => [
+          r['م'],
+          `"${String(r['باركود ESL']).replace(/"/g, '""')}"`,
+          `"${String(r['باركود المنتج']).replace(/"/g, '""')}"`,
+          `"${r['وقت المسح']}"`
+        ].join(','))
+      ];
+
+      // إضافة BOM لدعم اللغة العربية بشكل صحيح في Excel عند فتح CSV
+      const blob = new Blob(['\uFEFF' + csvLines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = getFormattedDateFilename('csv');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('تم تصدير ملف CSV بنجاح!');
+    }
+
+    // ==========================================
+    // أدوات مساعدة (Utilities)
+    // ==========================================
+    let toastTimeout = null;
+    function showToast(message) {
+      const toast = document.getElementById('toastNotification');
+      toast.textContent = message;
+      toast.classList.remove('opacity-0');
+      toast.classList.add('opacity-100');
+
+      clearTimeout(toastTimeout);
+      toastTimeout = setTimeout(() => {
+        toast.classList.remove('opacity-100');
+        toast.classList.add('opacity-0');
+      }, 2200);
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+  </script>
+</body>
+</html>
